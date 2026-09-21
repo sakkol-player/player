@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<!--
+  This site loads Spotify's player script, so it holds NOTHING except a Spotify token, and its CSP is what limits a
+  compromised script: it can only talk to the Relay and to Spotify hosts (no other place to send data).
+  If playback fails, open the browser console: a "Refused to ..." line names the directive and host to add here.
+-->
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self' https://sdk.scdn.co; style-src 'self' 'unsafe-inline'; img-src 'self' data: https://i.scdn.co https://*.scdn.co; connect-src %VITE_RELAY_URL% https://*.spotify.com wss://*.spotify.com https://*.scdn.co; frame-src https://sdk.scdn.co; media-src blob: https://*.scdn.co; worker-src 'self' blob:; base-uri 'none'; form-action 'none'">
+<title>Sakkol Web Player</title>
+<link rel="stylesheet" href="./src/style.css">
+</head>
+<body><main id="app"></main><script type="module" src="./src/main.ts"></script></body>
+</html>
