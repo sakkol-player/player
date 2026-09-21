@@ -2,9 +2,9 @@ import { h, mmss, set } from "../core/dom";
 import { session, every, onLeave } from "../core/state";
 import { lock } from "./lock";
 import { drmAvailable, loadSdk } from "./sdk";
-import { AuthError, playUri, search, transfer, Track } from "./spotifyApi";
+import { AuthError, playUri, playContext, search, transfer, Track, getLibrary, LibraryItem } from "./spotifyApi";
 
-const IDLE_LOCK_MS = 30 * 60_000; // no click/key for 30 min: forget the token and stop (so nobody can pick up an abandoned tab)
+const IDLE_LOCK_MS = 30 * 60_000;
 const artOk = (u?: string) => !!u && u.startsWith("https://i.scdn.co/");
 const fmt = (ms: number) => mmss(ms);
 
@@ -13,30 +13,52 @@ interface Now { title: string; artist: string; album: string; art: string; pause
 export async function playerView(root: HTMLElement) {
   const s0 = session;
   if (!s0) return lock();
-  let player: any = null, deviceId = "", cur: Now | null = null, lastAct = Date.now(), tracks: Track[] = [];
+
+  let player: any = null, deviceId = "", cur: Now | null = null, lastAct = Date.now();
+  let tracks: Track[] = [], library: LibraryItem[] = [], libraryLoaded = false, libraryBusy = false;
+  let libraryFilter = "all";
+
   onLeave(() => { try { player?.disconnect(); } catch { /* ignore */ } });
 
   const tok = () => session?.token ?? "";
   const cd = h("span");
   const msg = h("p", { cls: "err", role: "alert" });
-  const stat = h("p", { cls: "mut" }, "Checking this browser…");
-  const start = h("button", { cls: "pri", disabled: true }, "▶ Start player in this tab") as HTMLButtonElement;
-  const nowEl = h("div", { cls: "np" });
+  const stat = h("span", { cls: "status-pill" }, "Checking browser…");
+  const start = h("button", { cls: "start-btn", disabled: true }, "▶ Start player") as HTMLButtonElement;
+  const nowEl = h("section", { cls: "player-card" });
   const results = h("div", { cls: "results" });
-  const q = h("input", { type: "search", placeholder: "Search songs…", "aria-label": "Search songs", autocomplete: "off", maxlength: "100", disabled: true }) as HTMLInputElement;
+  const q = h("input", { type: "search", placeholder: "What do you want to play?", "aria-label": "Search Spotify", autocomplete: "off", maxlength: "100", disabled: true }) as HTMLInputElement;
+  const libQ = h("input", { type: "search", placeholder: "Search your library", "aria-label": "Search your saved library", autocomplete: "off" }) as HTMLInputElement;
+  const libResults = h("div", { cls: "library-grid" });
+  const content = h("main", { cls: "content" });
+  const searchSection = h("section", { cls: "content-section" });
+  const librarySection = h("section", { cls: "content-section hidden" });
 
   set(root,
-    h("div", { cls: "bar" },
-      h("div", {}, h("strong", {}, "🎵 Spotify web player"), h("div", { cls: "mut small" }, "Token valid for ", cd, " · locks itself after 30 min without a click or key press")),
-      h("div", { cls: "row-r" }, h("button", { cls: "done", onclick: () => lock("Locked.") }, "DONE — lock"))),
-    stat, start, msg, nowEl, q, results);
+    h("div", { cls: "app-shell" },
+      h("aside", { cls: "sidebar" },
+        h("div", { cls: "sidebar-brand" }, h("span", { cls: "brand-mark" }, "●"), h("strong", {}, "Sakkol")),
+        h("nav", { cls: "side-nav", "aria-label": "Main navigation" },
+          h("button", { cls: "nav-item active", id: "nav-search" }, h("span", { cls: "nav-icon" }, "⌕"), "Search"),
+          h("button", { cls: "nav-item", id: "nav-library" }, h("span", { cls: "nav-icon" }, "▦"), "Your Library")),
+        h("div", { cls: "side-note" }, h("span", { cls: "mut" }, "Spotify Web Player"), h("span", { cls: "small muted" }, "Secure session · ", cd)),
+        h("button", { cls: "lock-btn", onclick: () => lock("Locked.") }, "Lock player")),
+      h("div", { cls: "main-wrap" },
+        h("header", { cls: "topbar" },
+          h("div", { cls: "nav-arrows" }, h("button", { cls: "circle-btn", "aria-label": "Back" }, "‹"), h("button", { cls: "circle-btn", "aria-label": "Forward" }, "›")),
+          h("div", { cls: "top-actions" }, stat, start)),
+        content,
+        h("footer", { cls: "nowbar" }, nowEl)),
+    ),
+    searchSection, librarySection
+  );
+  set(content, searchSection, librarySection);
 
   const fail = (e: unknown) => {
     if (e instanceof AuthError) return lock("Spotify rejected the token. Unlock again.");
     msg.textContent = e instanceof Error ? e.message : "Something went wrong.";
   };
 
-  // ---- housekeeping: countdown, idle lock, expiry ----
   const act = () => { lastAct = Date.now(); };
   document.addEventListener("pointerdown", act); document.addEventListener("keydown", act);
   onLeave(() => { document.removeEventListener("pointerdown", act); document.removeEventListener("keydown", act); });
@@ -47,57 +69,122 @@ export async function playerView(root: HTMLElement) {
     else if (Date.now() - lastAct > IDLE_LOCK_MS) lock("Locked after 30 minutes without activity.");
   }, 1000);
 
-  // ---- now playing ----
-  const progFill = h("div", { cls: "progfill" }), time = h("span", { cls: "mut small" });
+  const progFill = h("div", { cls: "progress-fill" }), time = h("span", { cls: "time-label" });
   const drawNow = () => {
-    if (!cur) return set(nowEl, h("div", { cls: "mut" }, deviceId ? "Nothing is playing in this tab. Search for a song below." : "Player not started."));
+    if (!cur) {
+      set(nowEl, h("div", { cls: "empty-player" }, h("div", { cls: "mini-disc" }, "♪"), h("div", {}, h("strong", {}, "Nothing playing"), h("span", {}, deviceId ? "Pick a song from Search." : "Start the player to begin."))));
+      return;
+    }
     const c = cur;
     const vol = h("input", { type: "range", min: "0", max: "100", value: 60, "aria-label": "Volume" }) as HTMLInputElement;
     let vt = 0;
     vol.oninput = () => { clearTimeout(vt); vt = window.setTimeout(() => player?.setVolume(Number(vol.value) / 100), 200); };
-    set(nowEl, h("div", { cls: "npmain" },
-      artOk(c.art) ? h("img", { src: c.art, alt: "", width: "96", height: "96", referrerpolicy: "no-referrer" }) : h("div", { cls: "noart" }, "♪"),
-      h("div", { cls: "npinfo" }, h("strong", {}, c.title || "Unknown"), h("div", { cls: "mut" }, [c.artist, c.album].filter(Boolean).join(" · ")),
-        h("div", { cls: "prog" }, progFill), time,
-        h("div", { cls: "row-l" },
-          h("button", { onclick: () => player?.previousTrack(), "aria-label": "Previous" }, "⏮"),
-          h("button", { cls: "pri", onclick: () => player?.togglePlay(), "aria-label": c.paused ? "Play" : "Pause" }, c.paused ? "▶" : "⏸"),
-          h("button", { onclick: () => player?.nextTrack(), "aria-label": "Next" }, "⏭")),
-        h("label", { cls: "small" }, "Volume ", vol))));
+    set(nowEl, h("div", { cls: "nowbar-inner" },
+      artOk(c.art) ? h("img", { cls: "now-art", src: c.art, alt: "", width: "56", height: "56", referrerpolicy: "no-referrer" }) : h("div", { cls: "now-art placeholder" }, "♪"),
+      h("div", { cls: "now-meta" }, h("strong", {}, c.title || "Unknown"), h("span", {}, c.artist || "Unknown artist"), h("small", {}, c.album || "")),
+      h("div", { cls: "transport" },
+        h("div", { cls: "transport-buttons" },
+          h("button", { class: "icon-btn", onclick: () => player?.previousTrack(), "aria-label": "Previous" }, "⏮"),
+          h("button", { cls: "play-btn", onclick: () => player?.togglePlay(), "aria-label": c.paused ? "Play" : "Pause" }, c.paused ? "▶" : "Ⅱ"),
+          h("button", { cls: "icon-btn", onclick: () => player?.nextTrack(), "aria-label": "Next" }, "⏭")),
+        h("div", { cls: "progress-row" }, h("span", { cls: "time-label" }, "0:00"), h("div", { cls: "progress" }, progFill), time)),
+      h("div", { cls: "volume" }, h("span", {}, "🔊"), vol)
+    ));
   };
+
   every(() => {
     if (!cur) return;
     const pos = Math.min(cur.dur, cur.pos + (cur.paused ? 0 : Date.now() - cur.t0));
-    progFill.style.width = (cur.dur ? (pos / cur.dur) * 100 : 0) + "%"; // CSSOM: allowed by the CSP
-    time.textContent = `${fmt(pos)} / ${fmt(cur.dur)}`;
+    progFill.style.width = (cur.dur ? (pos / cur.dur) * 100 : 0) + "%";
+    time.textContent = fmt(pos);
   }, 1000);
   drawNow();
 
-  // ---- search ----
-  const drawResults = () => set(results, ...tracks.map((t) => h("div", { cls: "track" },
-    artOk(t.art) ? h("img", { src: t.art, alt: "", width: "40", height: "40", referrerpolicy: "no-referrer" }) : h("div", { cls: "noart sm" }, "♪"),
-    h("div", { cls: "trackinfo" }, h("div", {}, t.title), h("div", { cls: "mut small" }, `${t.artist} · ${t.album}`)),
-    h("button", { cls: "pri", "aria-label": `Play ${t.title}`, onclick: async () => {
+  const resultTitle = h("h1", {}, "Search");
+  set(searchSection,
+    h("div", { cls: "section-heading" }, h("div", {}, resultTitle, h("p", {}, "Find tracks to play in this tab."))),
+    h("div", { cls: "search-box" }, h("span", {}, "⌕"), q),
+    msg, results
+  );
+
+  const renderLibrary = () => {
+    const term = libQ.value.trim().toLowerCase();
+    const visible = library.filter((x) => (libraryFilter === "all" || x.type === libraryFilter) &&
+      (!term || x.name.toLowerCase().includes(term) || x.subtitle.toLowerCase().includes(term)));
+    set(libResults, ...visible.map((x) => h("button", { cls: "library-card", onclick: async () => {
+      if (!deviceId) { msg.textContent = "Start the player in this tab first."; return; }
       msg.textContent = "";
-      if (!deviceId) { msg.textContent = "Press “Start player in this tab” first."; return; }
+      try { await playContext(tok(), deviceId, x.uri); } catch (e) { fail(e); }
+    }},
+      artOk(x.art) ? h("img", { src: x.art, alt: "", width: "160", height: "160", referrerpolicy: "no-referrer" }) : h("div", { cls: "library-art placeholder" }, x.type === "album" ? "♫" : "▦"),
+      h("strong", {}, x.name),
+      h("span", {}, x.subtitle),
+      h("small", {}, x.type === "album" ? "Album" : "Playlist")
+    )));
+    if (!visible.length) set(libResults, h("div", { cls: "empty-library" }, "No matches in your library."));
+  };
+
+  const loadLibrary = async () => {
+    if (libraryBusy || libraryLoaded) return;
+    libraryBusy = true;
+    try {
+      library = await getLibrary(tok());
+      libraryLoaded = true;
+      renderLibrary();
+    } catch (e) { fail(e); }
+    finally { libraryBusy = false; }
+  };
+
+  const setTab = async (tab: "search" | "library") => {
+    const isSearch = tab === "search";
+    searchSection.classList.toggle("hidden", !isSearch);
+    librarySection.classList.toggle("hidden", isSearch);
+    document.getElementById("nav-search")?.classList.toggle("active", isSearch);
+    document.getElementById("nav-library")?.classList.toggle("active", !isSearch);
+    if (!isSearch) await loadLibrary();
+  };
+  document.getElementById("nav-search")!.onclick = () => void setTab("search");
+  document.getElementById("nav-library")!.onclick = () => void setTab("library");
+  libQ.oninput = renderLibrary;
+
+  const filterButtons = h("div", { cls: "filter-row" },
+    ...(["all", "playlist", "album"] as const).map((f) => h("button", { cls: `filter-btn${f === "all" ? " active" : ""}`, onclick: (e: Event) => {
+      libraryFilter = f;
+      filterButtons.querySelectorAll("button").forEach((b) => b.classList.remove("active"));
+      (e.currentTarget as HTMLElement).classList.add("active");
+      renderLibrary();
+    } }, f === "all" ? "All" : f === "playlist" ? "Playlists" : "Albums"))
+  );
+  set(librarySection,
+    h("div", { cls: "section-heading library-heading" }, h("div", {}, h("h1", {}, "Your Library"), h("p", {}, "Your saved albums and playlists."))),
+    h("div", { cls: "library-tools" }, h("div", { cls: "search-box" }, h("span", {}, "⌕"), libQ), filterButtons),
+    libResults
+  );
+
+  const drawResults = () => set(results, ...tracks.map((t) => h("div", { cls: "track-row" },
+    artOk(t.art) ? h("img", { src: t.art, alt: "", width: "56", height: "56", referrerpolicy: "no-referrer" }) : h("div", { cls: "track-art placeholder" }, "♪"),
+    h("div", { cls: "track-info" }, h("strong", {}, t.title), h("span", {}, t.artist), h("small", {}, t.album)),
+    h("button", { cls: "track-play", "aria-label": `Play ${t.title}`, onclick: async () => {
+      msg.textContent = "";
+      if (!deviceId) { msg.textContent = "Start the player in this tab first."; return; }
       try { await playUri(tok(), deviceId, t.uri); } catch (e) { fail(e); }
     } }, "▶"))));
+
   q.onkeydown = async (e) => {
     if (e.key !== "Enter") return;
     const term = q.value.trim(); if (!term) return;
     msg.textContent = "";
-    try { tracks = await search(tok(), term); drawResults(); if (!tracks.length) set(results, h("p", { cls: "mut" }, "No results.")); } catch (err) { fail(err); }
+    try { tracks = await search(tok(), term); drawResults(); if (!tracks.length) set(results, h("p", { cls: "empty-library" }, "No results. Try another search.")); } catch (err) { fail(err); }
   };
 
-  // ---- start the SDK (only after unlock, and only if this browser can play DRM audio) ----
   if (!(await drmAvailable())) {
     stat.textContent = "";
-    msg.textContent = "This browser window cannot play Spotify: DRM (Widevine) is not available. Firefox private windows disable it. Use Chrome or Edge (an incognito / InPrivate window is fine), or use the workspace's Spotify “Remote control” mode instead.";
+    msg.textContent = "This browser window cannot play Spotify: DRM (Widevine) is not available. Use Chrome or Edge, or use the workspace's remote-control mode.";
     return;
   }
-  try { stat.textContent = "Loading Spotify's player…"; await loadSdk(); }
-  catch { stat.textContent = ""; msg.textContent = "Could not load Spotify's player script. Check your connection and any content blockers."; return; }
-  stat.textContent = "Ready. Press the button to start the player in this tab (browsers need a click before playing audio).";
+  try { stat.textContent = "Loading Spotify…"; await loadSdk(); }
+  catch { stat.textContent = ""; msg.textContent = "Could not load Spotify's player script. Check your connection or content blockers."; return; }
+  stat.textContent = "Ready";
   start.disabled = false;
 
   start.onclick = () => {
@@ -108,11 +195,11 @@ export async function playerView(root: HTMLElement) {
     });
     player.activateElement?.();
     player.addListener("ready", async ({ device_id }: { device_id: string }) => {
-      deviceId = device_id; q.disabled = false; stat.textContent = "Player is running in this tab.";
+      deviceId = device_id; q.disabled = false; stat.textContent = "Playing on this tab";
       try { await transfer(tok(), deviceId, false); } catch (e) { fail(e); }
       drawNow();
     });
-    player.addListener("not_ready", () => { deviceId = ""; stat.textContent = "The player went offline."; });
+    player.addListener("not_ready", () => { deviceId = ""; stat.textContent = "Player offline"; });
     player.addListener("player_state_changed", (st: any) => {
       const t = st?.track_window?.current_track;
       cur = t ? { title: String(t.name ?? ""), artist: (t.artists ?? []).map((a: any) => a.name).join(", "), album: String(t.album?.name ?? ""),

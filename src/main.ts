@@ -16,7 +16,7 @@ const root = document.getElementById("app")!;
 function render() {
   resetView(); // clears timers and runs leave handlers (which stop the player)
   const body = h("section");
-  set(root, h("h1", { cls: "brand" }, "Sakkol Web Player"), body);
+  set(root, body);
   switch (view.n) {
     case "unlock": return void unlockView(body);
     case "player": return void playerView(body);

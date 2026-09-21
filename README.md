@@ -26,3 +26,32 @@ npm ci
 npm test
 VITE_RELAY_URL=https://sakkol-relay.YOURSUBDOMAIN.workers.dev npm run build
 ```
+
+
+## Updated player UI
+
+The player now uses a Spotify-inspired dark layout with:
+- left navigation for **Search** and **Your Library**
+- fixed bottom now-playing controls
+- responsive mobile navigation
+- Spotify-style album artwork cards and track rows
+- search across tracks
+- searchable **saved/followed playlists and saved albums**
+- one-click playback of a selected saved playlist or album in the active tab
+
+### Library authorization
+
+The new library view calls Spotify's `/me/playlists` and `/me/albums` endpoints. The access token therefore needs the corresponding Spotify library permissions in addition to streaming. In the Relay authorization configuration, include:
+
+- `user-library-read` for saved albums
+- `playlist-read-private` for private/followed playlists
+- `playlist-read-collaborative` if collaborative playlists should be included
+
+The exact Relay configuration is intentionally not changed here because the Relay source/configuration is not part of this player ZIP. If those scopes are not granted, playback/search will continue to work but **Your Library** will show a Spotify permission error until the authorization flow is updated and the user unlocks again.
+
+The UI loads up to 50 playlists and 50 saved albums per library refresh.
+
+
+## Relay scope update
+
+For the library view to work through the existing unlock flow, deploy the companion Relay update in `sakkol-relay-spotify-library-update-v1.1.0.zip`. Then unlock Spotify again in the player so Spotify grants a token containing the new library scopes.
