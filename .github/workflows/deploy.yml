@@ -1,5 +1,7 @@
-name: Deploy workspace frontend
-on: { push: { branches: [main], paths: ["web/**"] }, workflow_dispatch: {} }
+name: Deploy Spotify web player
+on:
+  push: { branches: [main] }
+  workflow_dispatch: {}
 permissions: { contents: read, pages: write, id-token: write }
 jobs:
   build:
@@ -7,12 +9,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
-        with: { node-version: 20 }
-      - run: npm install && npm run build
-        working-directory: web
+        with: { node-version: 22, cache: npm }
+      - name: Require VITE_RELAY_URL (otherwise the page CSP would be broken)
+        run: test -n "$VITE_RELAY_URL" || (echo "Set the repository variable VITE_RELAY_URL"; exit 1)
+        env: { VITE_RELAY_URL: "${{ vars.VITE_RELAY_URL }}" }
+      - run: npm ci
+      - run: npm test && npm run build
         env: { VITE_RELAY_URL: "${{ vars.VITE_RELAY_URL }}" }
       - uses: actions/upload-pages-artifact@v3
-        with: { path: web/dist }
+        with: { path: dist }
   deploy:
     needs: build
     runs-on: ubuntu-latest
