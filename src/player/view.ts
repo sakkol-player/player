@@ -29,7 +29,7 @@ export async function playerView(root: HTMLElement) {
   const results = h("div", { cls: "results" });
   const q = h("input", { type: "search", placeholder: "What do you want to play?", "aria-label": "Search Spotify", autocomplete: "off", maxlength: "100", disabled: true }) as HTMLInputElement;
   const libQ = h("input", { type: "search", placeholder: "Search your library", "aria-label": "Search your saved library", autocomplete: "off" }) as HTMLInputElement;
-  const libResults = h("div", { cls: "library-grid" });
+  const libResults = h("div", { cls: "library-list" });
   const content = h("main", { cls: "content" });
   const searchSection = h("section", { cls: "content-section" });
   const librarySection = h("section", { cls: "content-section hidden" });
@@ -109,17 +109,22 @@ export async function playerView(root: HTMLElement) {
 
   const renderLibrary = () => {
     const term = libQ.value.trim().toLowerCase();
-    const visible = library.filter((x) => (libraryFilter === "all" || x.type === libraryFilter) &&
-      (!term || x.name.toLowerCase().includes(term) || x.subtitle.toLowerCase().includes(term)));
-    set(libResults, ...visible.map((x) => h("button", { cls: "library-card", onclick: async () => {
+    const visible = library
+      .filter((x) => (libraryFilter === "all" || x.type === libraryFilter) &&
+        (!term || x.name.toLowerCase().includes(term) || x.subtitle.toLowerCase().includes(term)))
+      .sort((a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base", numeric: true }));
+    set(libResults, ...visible.map((x) => h("button", { cls: "library-row", onclick: async () => {
       if (!deviceId) { msg.textContent = "Start the player in this tab first."; return; }
       msg.textContent = "";
       try { await playContext(tok(), deviceId, x.uri); } catch (e) { fail(e); }
     }},
-      artOk(x.art) ? h("img", { src: x.art, alt: "", width: "160", height: "160", referrerpolicy: "no-referrer" }) : h("div", { cls: "library-art placeholder" }, x.type === "album" ? "♫" : "▦"),
-      h("strong", {}, x.name),
-      h("span", {}, x.subtitle),
-      h("small", {}, x.type === "album" ? "Album" : "Playlist")
+      artOk(x.art) ? h("img", { cls: "library-row-art", src: x.art, alt: "", width: "64", height: "64", referrerpolicy: "no-referrer" }) : h("div", { cls: "library-row-art placeholder" }, x.type === "album" ? "♫" : "▦"),
+      h("div", { cls: "library-row-info" },
+        h("strong", {}, x.name),
+        h("span", {}, x.type === "album" ? `Album • ${x.subtitle || "Unknown artist"}` : `Playlist • ${x.subtitle || "0 songs"}`)
+      ),
+      h("span", { cls: "library-row-type" }, x.type === "album" ? "Album" : "Playlist"),
+      h("span", { cls: "library-row-play", "aria-hidden": "true" }, "▶")
     )));
     if (!visible.length) set(libResults, h("div", { cls: "empty-library" }, "No matches in your library."));
   };
@@ -156,7 +161,7 @@ export async function playerView(root: HTMLElement) {
     } }, f === "all" ? "All" : f === "playlist" ? "Playlists" : "Albums"))
   );
   set(librarySection,
-    h("div", { cls: "section-heading library-heading" }, h("div", {}, h("h1", {}, "Your Library"), h("p", {}, "Your saved albums and playlists."))),
+    h("div", { cls: "section-heading library-heading" }, h("div", {}, h("h1", {}, "Your Library"), h("p", {}, "Your saved albums and playlists, sorted alphabetically."))),
     h("div", { cls: "library-tools" }, h("div", { cls: "search-box" }, h("span", {}, "⌕"), libQ), filterButtons),
     libResults
   );
